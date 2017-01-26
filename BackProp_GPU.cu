@@ -1,7 +1,7 @@
 
+
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-
 #include <stdio.h>
 #include <iostream>
 #include <cmath>
@@ -17,7 +17,13 @@ const int numInputs = 3;         // Input nodes, plus the bias input.
 const int numHidden = 100;
 const int numHidden2 = 100;
 const int numOutput = 1;
-//=========================network parameters=====================                             
+
+//========================device copies of network architecture===========
+__device__ __constant__ int numInputs = 3;
+__device__ __constant__ int numHidden = 100;
+__device__ __constant__ int numHidden2 = 100;
+__device__ __constant__ int numOutput = 1;
+//=========================device copies network parameters=====================                             
 __device__ __constant__ double LR = 0.5;       // Learning rate                   
 __device__ __constant__ double M = 0.1;      // Momentum Rate
 
@@ -36,6 +42,7 @@ double errorTotal = 0.0;
 double SumOf = 0;
 
 //==================Matrices Vital for Backprop================
+//===================================================NEED TO BE COPIED TO DEVICE IN BACKPROPPREP FUNCTION========================================================
 double hiddenActivation[numHidden] = { 0.0 };
 double hidden2Activation[numHidden2] = { 0.0 };
 double outputActivation[numOutput] = { 0.0 };
@@ -62,7 +69,6 @@ void train();
 void initWeights();
 void feedforward();
 void backProp();
-void Error();
 void initData();
 void test_1();
 double getRand(double num1, double num2);
@@ -70,15 +76,66 @@ double sigmoid(double x);
 double dsigmoid(double x);
 cudaError_t CudaBackProp();
 
-__global__ void CudaBackProp_part1(int *c, const int *a, const int *b)
+__global__ void CudaBackProp_part1()
 {
     int i = threadIdx.x;
-    c[i] = a[i] + b[i];
+	outputDeltas[i] = LR * errThisPat * outputActivation[i];
 }
 
 __global__ void CudaBackProp_part2()
 {
+	int j = threadIdx.x;
 
+	errors = 0;
+	for (int k = 0; k < numOutput; k++)
+	{
+		errors = errors + outputDeltas[k] * weightsHO[j][k];
+	}
+	hidden2Deltas[j] = dsigmoid(hidden2Activation[j]) * errors;
+}
+
+__global__ void CudaBackProp_part3()
+{
+	int j = threadIdx.x;
+	errors = 0;
+	for (int k = 0; k < numHidden2; k++)
+	{
+		errors = errors + hidden2Deltas[k] * weightsH1H2[j][k];
+	}
+	hiddenDeltas[j] = dsigmoid(hiddenActivation[j]) * errors;
+}
+
+__global__ void CudaBackProp_part4()
+{
+	int j = threadIdx.x;
+	for (int k = 0; k< numOutput; k++)
+	{
+		change = outputDeltas[k] * hidden2Activation[j];
+		weightsHO[j][k] = weightsHO[j][k] + LR*change + M*changeOutput[j][k];
+		changeOutput[j][k] = change;
+	}
+}
+
+__global__ void CudaBackProp_part5()
+{
+	int j = threadIdx.x;
+	for (int k = 0; k< numHidden2; k++)
+	{
+		change = hidden2Deltas[k] * hiddenActivation[j];
+		weightsH1H2[j][k] = weightsH1H2[j][k] + LR*change + M*changeHidden2[j][k];
+		changeHidden2[j][k] = change;
+	}
+}
+
+__global__ void CudaBackProp_part6()
+{
+	int j = threadIdx.x;
+	for (int k = 0; k< numHidden; k++)
+	{
+		change = hiddenDeltas[k] * trainInputs[patNum][j];
+		changeHidden[j][k] = change;
+		weightsIH[j][k] = weightsIH[j][k] + LR*change + M*changeHidden[j][k];
+	}
 }
 
 int main()
@@ -109,39 +166,157 @@ int main()
 }
 
 // Helper function for using CUDABackProp
-cudaError_t CudaBackProp(int *c, int *a, int *b, unsigned int size)
+//=============================NEEDS WORK==================================
+cudaError_t CudaBackPropPrep(int numInputs,
+							 double hiddenActivation[], int numHidden, 
+							 double Hidden2Activation[], int numHidden2,
+							 double outputActivation[], int numOutput,
+							 double weightsIH[][], double weightsH1H2[][], double weightsHO[][], 
+							 double outputDeltas[], double hiddenDeltas[], double hidden2Deltas[],
+							 double changeHidden[][], double changeHidden2[][], double changeOutput[][]
+							)
 {
-	//---------------------device vectors---------------------
-    int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
-    cudaError_t cudaStatus;
-	//====================================================================================================================================
-    // Choose which GPU to run on, change this on a multi-GPU system.
+	cudaError_t cudaStatus;
+	//---------------------device versions of vectors---------------------
+    double *dev_HiddenActivation = 0;
+    double *dev_Hidden2Activation = 0;
+	double *dev_outputActivation = 0;
+
+	double *dev_weightsIH = 0;
+	double *dev_weightsH1H2 = 0;
+	double *dev_weightsHO = 0;
+
+	double *dev_outputDeltas = 0;
+	double *dev_hiddenDeltas = 0;
+	double *dev_hidden2Deltas = 0;
+
+	double *dev_changeHidden = 0;
+	double *dev_changeHidden2 = 0;
+	double *dev_changeOutput = 0;
+	//---------------------------------------------------------------------------
+
+    // Choose which GPU to run on
     cudaStatus = cudaSetDevice(0);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
         goto Error;
     }
 
-    // -----------------------------------Allocate GPU buffers for three vectors (two input, one output)-----------------------------------
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(double));
+    // -----------------------------------Allocate 1D GPU buffers for vectors-----------------------------------
+    cudaStatus = cudaMalloc((void**)&dev_HiddenActivation, numHidden * sizeof(double));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(double));
+    cudaStatus = cudaMalloc((void**)&dev_Hidden2Activation, numHidden2 * sizeof(double));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(double));
+    cudaStatus = cudaMalloc((void**)&dev_OutputActivation, numOutput * sizeof(double));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
+
+	cudaStatus = cudaMalloc((void**)&dev_outputDeltas, numOutput * sizeof(double));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	cudaStatus = cudaMalloc((void**)&dev_HiddenDeltas, numHidden * sizeof(double));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+	
+	cudaStatus = cudaMalloc((void**)&dev_Hidden2Deltas, numHidden2 * sizeof(double));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	//------------------------------------Allocate 2D GPU buffers for 2D vectors--------------------------------------
+	//T* pElement = (T*)((char*)BaseAddress + Row * pitch) + Column; <---- addressing a "ptich"
+	size_t pitch_WeightsIH;
+	cudaStatus = cudaMallocPitch((void **)&dev_weightsIH,
+		&pitch_WightsIH,
+		numInputs * sizeOf(double),
+		numHidden * sizeOf(double)
+	)
+	if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+	size_t pitch_WeightsH1H2;
+	cudaStatus = cudaMallocPitch((void **)&dev_weightsH1H2,
+		&pitch_WeightsH1H2,
+		numHidden * sizeOf(double),
+		numHidden2 * sizeOf(double)
+		)
+	if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+	size_t pitch_WeightsHO;
+	cudaStatus = cudaMallocPitch((void **)&dev_weightsHO,
+		pitch_WeightsHO,
+		numHidden2 * sizeOf(double),
+		numOutput * sizeOf(double)
+		)
+	if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+	cudaStatus = cudaMallocPitch((void **)&dev_weightsIH,
+			size_t * pitch,
+			size_t 	width,
+			size_t 	height
+		)
+	if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+	size_t pitch_changeHidden;
+	cudaStatus = cudaMallocPitch((void **)&dev_weightsIH,
+			size_t * pitch,
+			size_t 	width,
+			size_t 	height
+		)
+	if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+	size_t pitch_changeHidden2;
+	cudaStatus = cudaMallocPitch((void **)&dev_weightsIH,
+			size_t * pitch,
+			size_t 	width,
+			size_t 	height
+		)
+	if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+	size_t pitch_changeOutput;
+	cudaStatus = cudaMallocPitch((void **)&dev_weightsIH,
+		size_t * pitch,
+		size_t 	width,
+		size_t 	height
+	)
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
 	//====================================================================================================================================
 
     //------------------------------------------Copy input vectors from host memory to GPU buffers---------------------------------------
@@ -150,53 +325,85 @@ cudaError_t CudaBackProp(int *c, int *a, int *b, unsigned int size)
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
-
     cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+
 	//====================================================================================================================================
-    // Launch a kernels on the GPU with one thread for each element.
-    CudaBackProp<<<1, size>>>(dev_c, dev_a, dev_b);
-	//sync threads before next action
-	__syncthreads();
-	CudaBackProp2 << <1, size >> >(dev_c, dev_a, dev_b);
-	__syncthreads();
-
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
+	return cudaStatus;
     
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    
-    return cudaStatus;
 }
-//-----------------------------------------------------------
 //--------------------------------------------------------
 void train()
 {
+	cudaError_t cudaStatus = cudaBackPropprep();
+	if (cudaStatus != cudaSuccess)
+	{
+		fprintf(stderr, "cuda failed!");
+		return 1;
+	}
 	for (int j = 0; j <= numEpochs; j++)
 	{
 		errorTotal = 0;
@@ -206,18 +413,55 @@ void train()
 			//Calculate the output and error for this pattern.
 			feedforward();
 			errorTotal = errorTotal + RMSerror;
-			//Adjust network weights.
-			cudaError_t cudaStatus = cudaBackProp();
-			if (cudaStatus != cudaSuccess) 
-			{
-					fprintf(stderr, "cuda failed!");
-					return 1;
+			
+			//-----------------------Launch kernels on the GPU with one thread for each element in outside array----------------
+			//replace size with length of outer array in nested loop.
+			CudaBackProp_part1 <<<1, numOutput >>>();
+			__syncthreads();
+			CudaBackProp_part2 << <1, numHidden2 >>>();
+			__syncthreads();
+			CudaBackProp_part3 <<<1, numHidden >>>();
+			__syncthreads();
+			CudaBackProp_part4 <<<1, numHidden2 >>>();
+			__syncthreads();
+			CudaBackProp_part5 <<<1, numHidden >>>();
+			__syncthreads();
+			CudaBackProp_part6 << <1, numInputs >> >();
+			__syncthreads();
+
+			// Check for any errors launching the kernel
+			cudaStatus = cudaGetLastError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+				goto Error;
 			}
+
 
 		}
 		errorTotal = sqrt(errorTotal / numPatterns);
 		if (j % 100 == 0) { cout << "epoch = " << j << " Error = " << errorTotal << endl; }
 	}
+
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+		goto Error;
+	}
+
+	//-------------------------Need to do this for all weights vectors-------------------------
+	// Copy output vector from GPU buffer to host memory.
+	cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	//-----------------------------------------------------------------------------------------
+	Error:
+		cudaFree(dev_c);
+		cudaFree(dev_a);
+		cudaFree(dev_b);
+
+	return cudaStatus;
 	
 }
 
@@ -310,67 +554,6 @@ void feedforward()
 
 }
 
-void backProp()
-{
-	double errors = 0;
-	double change = 0;
-	//calc weight delta for output
-	for (int k = 0; k < numOutput; k++)
-	{
-		outputDeltas[k] = LR * errThisPat * outputActivation[k];
-		//weightsHO[k] = weightsHO[k] - weightChange;
-	}
-	for (int j = 0; j < numHidden2; j++)
-	{
-		errors = 0;
-		for (int k = 0; k < numOutput; k++)
-		{
-			errors = errors + outputDeltas[k] * weightsHO[j][k];
-		}
-		hidden2Deltas[j] = dsigmoid(hidden2Activation[j]) * errors;
-	}
-
-	for (int j = 0; j < numHidden; j++)
-	{
-		errors = 0;
-		for (int k = 0; k < numHidden2; k++)
-		{
-			errors = errors + hidden2Deltas[k] * weightsH1H2[j][k];
-		}
-		hiddenDeltas[j] = dsigmoid(hiddenActivation[j]) * errors;
-	}
-
-	for (int j = 0; j< numHidden2; j++)
-	{
-		for (int k = 0; k< numOutput; k++)
-		{
-			change = outputDeltas[k] * hidden2Activation[j];
-			weightsHO[j][k] = weightsHO[j][k] + LR*change + M*changeOutput[j][k];
-			changeOutput[j][k] = change;
-		}
-	}
-
-	for (int j = 0; j< numHidden; j++)
-	{
-		for (int k = 0; k< numHidden2; k++)
-		{
-			change = hidden2Deltas[k] * hiddenActivation[j];
-			weightsH1H2[j][k] = weightsH1H2[j][k] + LR*change + M*changeHidden2[j][k];
-			changeHidden2[j][k] = change;
-		}
-	}
-
-	for (int j = 0; j<numInputs; j++)
-	{
-		for (int k = 0; k< numHidden; k++)
-		{
-			change = hiddenDeltas[k] * trainInputs[patNum][j];
-			weightsIH[j][k] = weightsIH[j][k] + LR*change + M*changeHidden[j][k];
-			changeHidden[j][k] = change;
-		}
-	}
-}
-
 void test_1()
 {
 	for (int i = 0; i < numPatterns / 10; i++)
@@ -393,7 +576,12 @@ double sigmoid(double x)
 	return 1 / (1 + exp(-x));
 }
 
-__device__double dsigmoid(double x)
+__global__ double sigmoid(double x)
+{
+	return 1 / (1 + exp(-x));
+}
+
+__device__ double dsigmoid(double x)
 {
 	return sigmoid(x) * (1 - sigmoid(x));
 }
