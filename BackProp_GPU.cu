@@ -18,10 +18,10 @@ const int numHidden2 = 100;		//number of nodes in hidden layer 2
 const int numOutput = 1;		//number of output nodes
 
 //========================device copies of network architecture===========
-__device__ __constant__ int numInputs = 3;
-__device__ __constant__ int numHidden = 100;
-__device__ __constant__ int numHidden2 = 100;
-__device__ __constant__ int numOutput = 1;
+__device__ __constant__ int dev_numInputs = 3;
+__device__ __constant__ int dev_numHidden = 100;
+__device__ __constant__ int dev_numHidden2 = 100;
+__device__ __constant__ int dev_numOutput = 1;
 //=========================device copies network parameters=====================                             
 __device__ __constant__ double LR = 0.5;       // Learning rate                   
 __device__ __constant__ double M = 0.1;      // Momentum Rate
@@ -33,57 +33,66 @@ const int minRange = -2;       //input range for points in the dataset
 const int maxRange = 2;
 const int numEpochs = 1000;    //Amount of training to do. epoch = 1 exposure to the entire training set
 
-__device__ int patNum = 0;                 //tracking the pattern number
-__device__ double Guess = 0.0;             // network output value.
-__device__ double errThisPat = 0.0;
-__device__ double RMSerror = 0.0;      // Squared error
-__device__ double errorTotal = 0.0;
 
+__device__ double dev_Guess = 0.0;             // network output value.
+__device__ double dev_errThisPat = 0.0;
+__device__ double dev_RMSerror = 0.0;      // Squared error
+__device__ double dev_errorTotal = 0.0;
+
+ int patNum = 0;
+ int *dev_patNum; //tracking the pattern number
  double Guess = 0.0;             // network output value.
  double errThisPat = 0.0;
  double RMSerror = 0.0;      // Squared error
  double errorTotal = 0.0;
  double SumOf = 0;
 
-double trainInputs[numPatterns][numInputs];
-int trainOutput[numPatterns];           // "Actual" output values.
+ double **trainInputs;
+ double *trainOutput = new double[numPatterns];           // "Actual" output values.
+
+
 
 
 //==================Matrices Vital for Backprop================
+//may need to malloc
 double *hiddenActivation = new double[numHidden];
 double *hidden2Activation= new double[numHidden2];
 double *outputActivation = new double[numOutput];
 
-double **weightsIH; // Input to Hidden weights.
-double **weightsH1H2; 
-double **weightsHO; // Hidden to Output weights.
+double **weightsIH = (double**)malloc((numHidden * numInputs) * sizeof(double)); // Input to Hidden weights.
+double **weightsH1H2 = (double**)malloc((numHidden * numHidden2) * sizeof(double));
+double **weightsHO = (double**)malloc((numOutput * numHidden2) * sizeof(double)); // Hidden to Output weights.
 
 double *outputDeltas=new double[numOutput];
 double *hidden2Deltas=new double[numHidden2];
 double *hiddenDeltas=new double[numHidden];
 
 
-double **changeHidden; 
-double **changeHidden2; 
-double **changeOutput; 
+double **changeHidden = (double**)malloc((numHidden * numInputs) *sizeof(double));
+double **changeHidden2 = (double**)malloc((numHidden * numHidden2) *sizeof(double));
+double **changeOutput = (double**)malloc((numOutput * numHidden2) *sizeof(double));
 
 //=================device versions of vectors=================
 double *dev_hiddenActivation = 0;
 double *dev_hidden2Activation = 0;
 double *dev_outputActivation = 0;
 
-double *dev_weightsIH = 0;
-double *dev_weightsH1H2 = 0;
-double *dev_weightsHO = 0;
+double **dev_weightsIH = 0;
+double **dev_weightsH1H2 = 0;
+double **dev_weightsHO = 0;
 
 double *dev_outputDeltas = 0;
 double *dev_hiddenDeltas = 0;
 double *dev_hidden2Deltas = 0;
 
-double *dev_changeHidden = 0;
-double *dev_changeHidden2 = 0;
-double *dev_changeOutput = 0;
+double **dev_changeHidden = 0;
+double **dev_changeHidden2 = 0;
+double **dev_changeOutput = 0;
+
+double **dev_trainInputs = 0;
+double *dev_trainOutput = 0;
 //========================pitch sizes for 2D vector memory allocation=============================
+size_t pitch_trainInputs;
 size_t pitch_WeightsIH;
 size_t pitch_WeightsH1H2;
 size_t pitch_WeightsHO;
@@ -97,8 +106,8 @@ size_t pitch_changeOutput;
 void initWeights();
 void feedforward();
 void backProp();
-void initData();
-void test_1();
+cudaError_t initData();
+//void test_1();
 double getRand(double num1, double num2);
 double sigmoid(double x);
 double dsigmoid(double x);
@@ -110,110 +119,21 @@ cudaError_t DeviceMemoryPrep(int numInputs,
 	double outputDeltas[], double hiddenDeltas[], double hidden2Deltas[],
 	double **changeHidden, double **changeHidden2, double **changeOutput);
 cudaError_t train();
-
-//==================================Kernel Definitions=============================
-__global__ void CudaBackProp_part1()
-{
-    int i = threadIdx.x;
-	outputDeltas[i] = LR * errThisPat * outputActivation[i];
-}
-
-__global__ void CudaBackProp_part2()
-{
-	int j = threadIdx.x;
-	double errors = 0;
-	for (int k = 0; k < numOutput; k++)
-	{
-		errors = errors + outputDeltas[k] * weightsHO[j][k];
-	}
-	hidden2Deltas[j] = dsigmoid(hidden2Activation[j]) * errors;
-}
-
-__global__ void CudaBackProp_part3()
-{
-	int j = threadIdx.x;
-	double errors = 0;
-	for (int k = 0; k < numHidden2; k++)
-	{
-		errors = errors + hidden2Deltas[k] * weightsH1H2[j][k];
-	}
-	hiddenDeltas[j] = dsigmoid(hiddenActivation[j]) * errors;
-}
-
-__global__ void CudaBackProp_part4()
-{
-	int j = threadIdx.x;
-	double change = 0;
-	for (int k = 0; k< numOutput; k++)
-	{
-		change = outputDeltas[k] * hidden2Activation[j];
-		weightsHO[j][k] = weightsHO[j][k] + LR*change + M*changeOutput[j][k];
-		changeOutput[j][k] = change;
-	}
-}
-
-__global__ void CudaBackProp_part5()
-{
-	int j = threadIdx.x;
-	double change = 0;
-	for (int k = 0; k< numHidden2; k++)
-	{
-		change = hidden2Deltas[k] * hiddenActivation[j];
-		weightsH1H2[j][k] = weightsH1H2[j][k] + LR*change + M*changeHidden2[j][k];
-		changeHidden2[j][k] = change;
-	}
-}
-
-__global__ void CudaBackProp_part6()
-{
-	int j = threadIdx.x;
-	double change = 0;
-	for (int k = 0; k< numHidden; k++)
-	{
-		change = hiddenDeltas[k] * trainInputs[patNum][j];
-		changeHidden[j][k] = change;
-		weightsIH[j][k] = weightsIH[j][k] + LR*change + M*changeHidden[j][k];
-	}
-}
-
-__global__ void CudaFeedForward_part1()
-{
-	int i = threadIdx.x;
-	double SumOf = 0.0;
-	for (int j = 0; j < numInputs; j++)
-	{
-		SumOf = SumOf + (trainInputs[patNum][j] * weightsIH[j][i]);
-	}
-	hiddenActivation[i] = sigmoid(SumOf);
-}
-
-__global__ void CudaFeedForward_part2()
-{
-	int i = threadIdx.x;
-	double SumOf = 0.0;
-	for (int j = 0; j < numHidden; j++)
-	{
-		SumOf = SumOf + (hiddenActivation[j] * weightsH1H2[j][i]);
-	}
-	hidden2Activation[i] = sigmoid(SumOf);
-}
-
-__global__ void CudaFeedForward_part3()
-{
-	int i = threadIdx.x;
-	double SumOf = 0.0;
-	for (int j = 0; j < numHidden2; j++)
-	{
-		SumOf = SumOf + (hidden2Activation[j] * weightsHO[j][i]);
-	}
-	outputActivation[i] = sigmoid(SumOf);
-}
+__global__ void CudaBackProp_part1(double dev_outputDeltas[], double dev_outputActivation[]);
+__global__ void CudaBackProp_part2(double dev_outputDeltas[], double**dev_weightsHO, double dev_hidden2Deltas[], double dev_hidden2Activation[]);
+__global__ void CudaBackProp_part3(double dev_Hidden2Deltas[], double**dev_weightsH1H2, double dev_hiddenDeltas[], double hiddenActivation[]);
+__global__ void CudaBackProp_part4(double dev_outputDeltas[], double dev_hidden2Activation[], double**dev_weightsHO, double**dev_changeOutput);
+__global__ void CudaBackProp_part5(double dev_hidden2Deltas[], double dev_hiddenActivation[], double**dev_weightsH1H2, double**dev_changeHidden2);
+__global__ void CudaBackProp_part6(int *patnum, double dev_hiddenDeltas[], double** dev_trainInputs, double**dev_changeHidden, double**dev_weightsIH);
+__global__ void CudaFeedForward_part1(int *patnum, double**dev_trainInputs, double**dev_weightsIH, double dev_hiddenActivation[]);
+__global__ void CudaFeedForward_part2( double dev_hiddenActivation[], double**dev_weightsH1H2, double dev_hidden2Activation[]);
+__global__ void CudaFeedForward_part3(int *patnum, double dev_hidden2Activation[], double**dev_weightsHO, double dev_outputActivation[], double dev_trainOutput[]);
 
 
 int main()
 {   
 	cudaError_t cudaStatus;
-	srand((unsigned)time(0));   // Seed the random num generator
+	//srand((unsigned)time(0));   // Seed the random num generator
 	initWeights();
 	cout << "created weights" << endl;
 
@@ -222,14 +142,14 @@ int main()
 
 	cudaStatus = train();
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Training Function Failed %d");
+		cout << stderr << " Training Function Failed" << endl;
 		return 1;
 	}
 	cout << "Finished training" << endl;
 
 	//Training has finished.
 	cout << "testing" << endl;
-	test_1();
+	//test_1();
 	
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -239,6 +159,15 @@ int main()
         return 1;
     }
 	//----------------------------------------------------------------------
+	free(weightsIH);
+	free(weightsH1H2);
+	free(weightsHO);
+	free(changeHidden);
+	free(changeOutput);
+	free(changeHidden2);
+
+
+
     return 0;
 }
 
@@ -258,7 +187,7 @@ cudaError_t DeviceMemoryPrep(int numInputs,
 {
 	cudaError_t cudaStatus;
 
-    // Choose which GPU to run on
+    // =====================================Choose which GPU to run on============================================
     cudaStatus = cudaSetDevice(0);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
@@ -372,7 +301,7 @@ cudaError_t DeviceMemoryPrep(int numInputs,
 
 	//-------------------------------------------------------------------------------------
 
-    //=======================================Copy 1D input vectors from host memory to GPU buffers======================================
+    //=======================================Copy 1D vectors from host memory to GPU buffers======================================
     cudaStatus = cudaMemcpy(dev_hiddenActivation, hiddenActivation, numHidden * sizeof(int), cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy1 failed!");
@@ -492,9 +421,10 @@ cudaError_t train()
 		for (int i = 0; i < numPatterns; i++)
 		{
 			patNum = i;
+			cudaMalloc((void**)&dev_patNum, sizeof(int));
+			cudaMemcpy(dev_patNum, &patNum, sizeof(int), cudaMemcpyHostToDevice);
 			//Calculate the output and error for this pattern.
 			feedforward();
-			errorTotal = errorTotal + RMSerror;
 			backProp();
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
@@ -555,59 +485,24 @@ Error:
 
 void backProp()
 {
-	cudaError_t cudaStatus;
-	cudaStatus=CudaBackProp_part1<<< 1, numOutput >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Backprop1 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-	cudaStatus = CudaBackProp_part2<<< 1, numHidden2 >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Backprop2 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-	cudaStatus = CudaBackProp_part3<<< 1, numHidden >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "aBackprop3 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-	cudaStatus = CudaBackProp_part4<<< 1, numHidden2 >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Backprop4 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-	cudaStatus = CudaBackProp_part5<<< 1, numHidden >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Backprop5 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-	cudaStatus = CudaBackProp_part6<<< 1, numInputs >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Backprop6 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-
-Error:
-	cudaFree(dev_hiddenActivation);
-	cudaFree(dev_hidden2Activation);
-	cudaFree(dev_outputActivation);
-
-	cudaFree(dev_weightsIH);
-	cudaFree(dev_weightsH1H2);
-	cudaFree(dev_weightsHO);
-
-	cudaFree(dev_outputDeltas);
-	cudaFree(dev_hiddenDeltas);
-	cudaFree(dev_hidden2Deltas);
-
-	cudaFree(dev_changeHidden);
-	cudaFree(dev_changeHidden2);
-	cudaFree(dev_changeOutput);
+	
+	CudaBackProp_part1<<<1, numOutput >>>(dev_outputDeltas, dev_outputActivation);
+	
+	CudaBackProp_part2<<<1, numHidden2 >>>(dev_outputDeltas, dev_weightsHO, dev_hidden2Deltas, dev_hidden2Activation);
+	
+	CudaBackProp_part3<<<1, numHidden >>>(dev_hidden2Deltas, dev_weightsH1H2, dev_hiddenDeltas,  hiddenActivation);
+	
+	CudaBackProp_part4<<<1, numHidden2 >>>(dev_outputDeltas, dev_hidden2Activation, dev_weightsHO, dev_changeOutput);
+	
+	CudaBackProp_part5<<<1, numHidden >>>(dev_hidden2Deltas, dev_hiddenActivation, dev_weightsH1H2, dev_changeHidden2);
+	
+	CudaBackProp_part6<<<1, numInputs >>>(dev_patNum, dev_hiddenDeltas,  dev_trainInputs ,dev_changeHidden, dev_weightsIH);
+	
 }
 
 void initWeights()
 {
-	//initialise 2d arrays
+	//=====================================initialise 2d arrays=========================================
 	weightsIH = new double*[numInputs];
 	for (int i = 0; i < numInputs; i++)
 	{
@@ -643,15 +538,14 @@ void initWeights()
 	{
 		changeOutput[i] = new double[numOutput];
 	}
-	// Initialize weights to random values.
+	//=================================Initialize weights to random values.======================================
 	for (int j = 0; j < numHidden; j++)
 	{
 		for (int i = 0; i < numInputs - 1; i++)
 		{
 			weightsIH[i][j] = getRand(-.2, .2);
-
 		}
-		weightsIH[j][numInputs - 1] = 1;//Bias
+		weightsIH[numInputs - 1][j] = 1;//Bias
 	}
 	for (int j = 0; j < numHidden2; j++)
 	{
@@ -669,67 +563,83 @@ void initWeights()
 	}
 }
 
-void initData()
+cudaError_t initData()
 {
-	//Training set of points inside/outside a circle
-	for (int j = 0; j < numPatterns; j++)
+	cudaError_t cudaStatus;
+	trainInputs = new double*[numPatterns];
+	for (int i = 0; i < numPatterns; i++)
 	{
-		for (int i = 0; i < numInputs; i++)
-		{
+		trainInputs[i] = new double[numInputs];
+	}
+	//data set of points inside/outside a circle
+	for (int j = 0; j < numPatterns; j++){
+		for (int i = 0; i < numInputs; i++){
 			trainInputs[i][j] = getRand(minRange, maxRange);
 		}
 
-		if (((trainInputs[j][0] * trainInputs[j][0]) + (trainInputs[j][1] * trainInputs[j][1])) < (radius*radius))
-		{//if in circle answer is 1
+		if (((trainInputs[j][0] * trainInputs[j][0]) + (trainInputs[j][1] * trainInputs[j][1])) < (radius*radius)){//if in circle answer is 1
 			trainOutput[j] = 1;
 		}//otherwise answer is 0
-		else { trainOutput[j] = 0; }
+		else { 
+			trainOutput[j] = 0; 
+		}
 	}
+
+	//==============================allocate and copy memory for output vector===========================
+	cudaStatus = cudaMalloc((void**)&dev_trainOutput, numPatterns * sizeof(double));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc output vec failed!");
+		goto Error;
+	}
+
+	cudaStatus = cudaMemcpy(dev_trainOutput, dev_trainOutput, numPatterns * sizeof(double), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy output vec failed!");
+		goto Error;
+	}
+
+	//===========================allocate and copy memory for input matrix============================
+	cudaStatus = cudaMallocPitch((void **)&dev_trainInputs,
+		&pitch_trainInputs,
+		numPatterns * sizeof(double),
+		numInputs * sizeof(double)
+	);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMallocPitch1 failed!");
+		goto Error;
+	}
+
+	cudaStatus = cudaMemcpy2D(dev_trainInputs, pitch_trainInputs * sizeof(double), trainInputs, pitch_trainInputs,
+		numPatterns * sizeof(double), numInputs, cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy2D 1 failed!");
+		goto Error;
+	}
+	
+	
+Error:
+	cudaFree(dev_trainInputs);
+	cudaFree(dev_trainOutput);
+
+	return cudaStatus;
+
 }
 
 void feedforward()
 {
 	//input nodes dont have activations, except an assignment from raw to an array
-
 	//hidden nodes activations
-	CudaFeedForward_part1<<<1, numHidden >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "FeedForward1 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-	CudaFeedForward_part2<<<1, numHidden2 >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "FeedForward2 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-	CudaFeedForward_part3<<<1, numOutput >>>();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "FeedForward3 kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
+	CudaFeedForward_part1<<<1, numHidden >>>(dev_patNum, dev_trainInputs, dev_weightsIH,  dev_hiddenActivation);
+	
+	CudaFeedForward_part2<<<1, numHidden2 >>>(dev_hiddenActivation, dev_weightsH1H2,  dev_hidden2Activation);
+	
+	CudaFeedForward_part3<<<1, numOutput >>>(dev_patNum,dev_hidden2Activation, dev_weightsHO, dev_outputActivation, dev_trainOutput);
+	
 	//Author Note:Needs general case for more than 1 output
-	Guess = outputActivation[0];
-	errThisPat = trainOutput[patNum] - Guess;
-	RMSerror = errThisPat * errThisPat;
 
-Error:
-	cudaFree(dev_hiddenActivation);
-	cudaFree(dev_hidden2Activation);
-	cudaFree(dev_outputActivation);
 
-	cudaFree(dev_weightsIH);
-	cudaFree(dev_weightsH1H2);
-	cudaFree(dev_weightsHO);
-
-	cudaFree(dev_outputDeltas);
-	cudaFree(dev_hiddenDeltas);
-	cudaFree(dev_hidden2Deltas);
-
-	cudaFree(dev_changeHidden);
-	cudaFree(dev_changeHidden2);
-	cudaFree(dev_changeOutput);
 }
-
+/*
 void test_1()
 {
 	for (int i = 0; i < numPatterns / 10; i++)
@@ -740,7 +650,7 @@ void test_1()
 			"| actual answer = " << trainOutput[patNum] <<
 			"| Neural Net guess = " << Guess << endl;
 	}
-}
+}*/
 
 double getRand(double num1, double num2)
 {
@@ -752,17 +662,17 @@ double sigmoid(double x)
 	return 1 / (1 + exp(-x));
 }
 
-__device__ double sigmoid(double x)
+__device__ double dev_sigmoid(double x)
 {
 	return 1 / (1 + exp(-x));
 }
 
-__device__ double dsigmoid(double x)
+__device__ double dev_dsigmoid(double x)
 {
-	return sigmoid(x) * (1 - sigmoid(x));
+	return dev_sigmoid(x) * (1 - dev_sigmoid(x));
 }
 
-void test_2()
+/*void test_2()
 {
 	int counter = 0;
 	for (int i = 0; i < numPatterns / 10; i++)
@@ -781,4 +691,106 @@ void test_2()
 		}
 	}
 	cout << ((counter / (numPatterns / 10)) * 100) << "% classification accuracy" << endl;
+}*/
+
+//==================================Kernel Definitions=============================
+__global__ void CudaBackProp_part1(double dev_outputDeltas[], double dev_outputActivation[])
+{
+    int i = threadIdx.x;
+	dev_outputDeltas[i] = LR * dev_errThisPat * dev_outputActivation[i];
 }
+
+__global__ void CudaBackProp_part2(double dev_outputDeltas[], double**dev_weightsHO,double dev_hidden2Deltas[],double dev_hidden2Activation[])
+{
+	int j = threadIdx.x;
+	double errors = 0;
+	for (int k = 0; k < numOutput; k++)
+	{
+		errors = errors + dev_outputDeltas[k] * dev_weightsHO[j][k];
+	}
+	dev_hidden2Deltas[j] = dev_dsigmoid(dev_hidden2Activation[j]) * errors;
+}
+
+__global__ void CudaBackProp_part3(double dev_hidden2Deltas[], double**dev_weightsH1H2,double dev_hiddenDeltas[],double hiddenActivation[])
+{
+	int j = threadIdx.x;
+	double errors = 0;
+	for (int k = 0; k < dev_numHidden2; k++)
+	{
+		errors = errors + dev_hidden2Deltas[k] * dev_weightsH1H2[j][k];
+	}
+	dev_hiddenDeltas[j] = dev_dsigmoid(hiddenActivation[j]) * errors;
+}
+
+__global__ void CudaBackProp_part4(double dev_outputDeltas[], double dev_hidden2Activation[], double**dev_weightsHO, double**dev_changeOutput)
+{
+	int j = threadIdx.x;
+	double change = 0;
+	for (int k = 0; k< numOutput; k++)
+	{
+		change = dev_outputDeltas[k] * dev_hidden2Activation[j];
+		dev_weightsHO[j][k] = dev_weightsHO[j][k] + LR*change + M*dev_changeOutput[j][k];
+		dev_changeOutput[j][k] = change;
+	}
+}
+
+__global__ void CudaBackProp_part5(double dev_hidden2Deltas[], double dev_hiddenActivation[], double**dev_weightsH1H2,double**dev_changeHidden2)
+{
+	int j = threadIdx.x;
+	double change = 0;
+	for (int k = 0; k< numHidden2; k++)
+	{
+		change = dev_hidden2Deltas[k] * dev_hiddenActivation[j];
+		dev_weightsH1H2[j][k] = dev_weightsH1H2[j][k] + LR*change + M*dev_changeHidden2[j][k];
+		dev_changeHidden2[j][k] = change;
+	}
+}
+
+__global__ void CudaBackProp_part6(int *patnum, double dev_hiddenDeltas[], double** dev_trainInputs, double**dev_changeHidden, double**dev_weightsIH)
+{
+	int j = threadIdx.x;
+	double change = 0;
+	for (int k = 0; k< numHidden; k++)
+	{
+		change = dev_hiddenDeltas[k] * dev_trainInputs[*patnum][j];
+		dev_changeHidden[j][k] = change;
+		dev_weightsIH[j][k] = dev_weightsIH[j][k] + LR*change + M*dev_changeHidden[j][k];
+	}
+}
+
+__global__ void CudaFeedForward_part1(int *patnum, double**dev_trainInputs, double**dev_weightsIH, double dev_hiddenActivation[])
+{
+	int i = threadIdx.x;
+	double SumOf = 0.0;
+	for (int j = 0; j < dev_numInputs; j++)
+	{
+		SumOf = SumOf + (dev_trainInputs[*patnum][j] * dev_weightsIH[j][i]);
+	}
+	dev_hiddenActivation[i] = dev_sigmoid(SumOf);
+}
+
+__global__ void CudaFeedForward_part2(double dev_hiddenActivation[], double**dev_weightsH1H2, double dev_hidden2Activation[])
+{
+	int i = threadIdx.x;
+	double SumOf = 0.0;
+	for (int j = 0; j < dev_numHidden; j++)
+	{
+		SumOf = SumOf + (dev_hiddenActivation[j] * dev_weightsH1H2[j][i]);
+	}
+	dev_hidden2Activation[i] = dev_sigmoid(SumOf);
+}
+
+__global__ void CudaFeedForward_part3(int *patnum, double dev_hidden2Activation[], double**dev_weightsHO, double dev_outputActivation[],double dev_trainOutput[])
+{
+	int i = threadIdx.x;
+	double SumOf = 0.0;
+	for (int j = 0; j < dev_numHidden2; j++)
+	{
+		SumOf = SumOf + (dev_hidden2Activation[j] * dev_weightsHO[j][i]);
+	}
+	dev_outputActivation[i] = dev_sigmoid(SumOf);
+	dev_errThisPat = dev_trainOutput[*patnum] - dev_outputActivation[0];
+	dev_RMSerror += dev_errThisPat * dev_errThisPat;
+}
+
+
