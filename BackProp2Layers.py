@@ -1,222 +1,364 @@
-import math
-import random
 
-random.seed()
+#include <iostream>
+#include <cmath>
+#include <ctime>
+#include <cstdlib>
+#include <stdio.h>
+#include <stdlib.h> 
 
-# calculate a random number between a and b
-def rand(a, b):
-    return (b-a)*random.random() + a
+using namespace std;
+//==============================Function Prototypes================================
+double getRand();
+double** initData(double **trainInput, double trainOutput[], int numPatterns, int numInputs, int numOutput);
 
-def makeMtx(I, J, fill=0.0):
-    m = []
-    for i in range(I):
-        m.append([fill]*J)
-    return m
+class NeuralNet {
+	int numInputs;
+	int numHidden;
+	int numHidden2;
+	int numOutput;
+	int patNum = 0;
 
-def sigmoid(x):
-    try:
-        return 1 / (1 + math.exp(-x))
-    except OverflowError:
-        x=x%1
-        return 1 / (1 + math.exp(-x))
+	const double LR_IH = 0.7;      
+	const double LR_HO = 0.07;
+	
+	double errThisPat = 0.0;
+	double outPred = 0.0;                   // "Expected" output values.
+	double RMSerror = 0.0;// Root Mean Squared error.
+	
+	//==================Matrices Vital for Backprop================
+	double *hiddenActivation; 
+	double *hidden2Activation; 
+	double *outputActivation; 
 
-def dsigmoid(x):
-    fx = sigmoid(x)
-    return fx * (1 - fx)
+	double **weightsIH; 
+	double **weightsH1H2; 
+	double **weightsHO; 
 
-class NeuralNet:
-    def __init__(self, ni, nh, nh2, no):
-        # number of input, hidden, hidden2 and output nodes
-        self.ni = ni + 1 # +1 for bias node
-        self.nh = nh
-        self.nh2 = nh2
-        self.no = no
-
-        # number of times activations are done, since it's just a loop of sigmoid functions
-        self.ai = [1.0]*self.ni
-        self.ah = [1.0]*self.nh
-        self.ah2 = [1.0]*self.nh2
-        self.ao = [1.0]*self.no
-        
-        # create weights
-        self.wi = makeMtx(self.ni, self.nh)
-        self.wh = makeMtx(self.nh,self.nh2)
-        self.wo = makeMtx(self.nh2, self.no)
-        # set them to random vaules
-        for i in range(0,self.ni):
-            for j in range(0,self.nh):
-                self.wi[i][j] = rand(-0.2, 0.2)
-        
-        for i in range(0,self.nh):
-            for j in range(0,self.nh2):
-                self.wh[i][j] = rand(-0.2, 0.2)
-                
-        for j in range(0,self.nh2):
-            for k in range(0,self.no):
-                self.wo[j][k] = rand(-2.0, 2.0)
-
-        # last change in weights for momentum   
-        self.ci = makeMtx(self.ni, self.nh)
-        self.ch = makeMtx(self.nh, self.nh2)
-        self.co = makeMtx(self.nh2, self.no)
-
-    def feedforward(self, inputs):
-        if len(inputs) != self.ni-1:
-            raise ValueError('The input nodes should be the same length as the data input length. E.G. a point classifying system needs input nodes = dimension of the points in the training set ')
-
-        # input nodes
-        for i in range(self.ni-1):
-            self.ai[i] = inputs[i]
-
-        # hidden node activations
-        for j in range(self.nh):
-            sumOf = 0.0
-            for i in range(self.ni):
-                sumOf = sumOf + self.ai[i] * self.wi[i][j]
-            self.ah[j] = sigmoid(sumOf)
-        
-        # hidden2 node activations
-        for j in range(self.nh2):
-            sumOf = 0.0
-            for i in range(self.nh):
-                sumOf = sumOf + self.ah[i] * self.wh[i][j]
-            self.ah2[j] = sigmoid(sumOf)
-        # output node activations
-        for k in range(self.no):
-            sumOf = 0.0
-            for j in range(self.nh2):
-                sumOf = sumOf + self.ah2[j] * self.wo[j][k]
-            self.ao[k] = sigmoid(sumOf)
-        #return guess
-        return self.ao[:]
+	double *outputDeltas; 
+	double *hidden2Deltas; 
+	double *hiddenDeltas; 
 
 
-    def backPropagate(self, targets, N, M):
-        if len(targets) != self.no:
-            raise ValueError('wrong number of target values')
+	double **changeHidden; 
+	double **changeHidden2; 
+	double **changeOutput;
 
-        # calculate error for output
-        output_deltas = [0.0] * self.no
-        for k in range(self.no):
-            error = targets[k]-self.ao[k]
-            output_deltas[k] = dsigmoid(self.ao[k]) * error
-        
-        # calculate error for hidden layer 2
-        hidden_deltas2 = [0.0] * self.nh2
-        for j in range(self.nh2):
-            error = 0.0
-            for k in range(self.no):
-                error = error + output_deltas[k]*self.wo[j][k]
-            hidden_deltas2[j] = dsigmoid(self.ah2[j]) * error
-        
-        # calculate error for hidden layer 1
-        hidden_deltas = [0.0] * self.nh
-        for j in range(self.nh):
-            error = 0.0
-            for k in range(self.nh2):
-                error = error + hidden_deltas2[k]*self.wh[j][k]
-            hidden_deltas[j] = dsigmoid(self.ah[j]) * error
+	double **trainInputs;
+	double *trainOutput; 
+	
+public:
+	NeuralNet(int numInputs, int numHidden, int numHidden2, int numOutput);
+	void initWeights();
+	void calcNet(double *trainInputs, double *trainOutput);
+	void WeightChangesHO();
+	void WeightChangesHidden(int patNum, double *trainInputs);
+	void calcOverallError(double **trainInputs, int numPatterns, double *trainOutput);
+	void displayResults(double **trainInputs, int numPatterns, double *trainOutput);
+	void train(int numEpochs, int numPatterns, double *trainInputs[], double *trainOutput);
+	
 
-        # update weights between hidden layer 1 and 2
-        for j in range(self.nh2):
-            for k in range(self.no):
-                change = output_deltas[k]*self.ah2[j]
-                self.wo[j][k] = self.wo[j][k] + N*change + M*self.co[j][k]
-                self.co[j][k] = change
-                #print N*change, M*self.co[j][k]
-        
-        # update weights between hidden layer 1 and hidden layer 2
-        for j in range(self.nh):
-            for k in range(self.nh2):
-                change = hidden_deltas2[k]*self.ah[j]
-                self.wh[j][k] = self.wh[j][k] + N*change + M*self.ch[j][k]
-                self.ch[j][k] = change
-        
-        # update weights between input and hidden layer 1
-        for i in range(self.ni):
-            for j in range(self.nh):
-                change = hidden_deltas[j]*self.ai[i]
-                self.wi[i][j] = self.wi[i][j] + N*change + M*self.ci[i][j]
-                self.ci[i][j] = change
+};
 
-        # calculate error
-        error = 0.0
-        for k in range(len(targets)):
-            error = error + 0.5*(targets[k]-self.ao[k])**2
-        return error
+NeuralNet::NeuralNet(int inumInputs,int inumHidden,int inumHidden2,int inumOutput){
+
+	numInputs = inumInputs;
+	numHidden = inumHidden;
+	numHidden2 = inumHidden2;
+	numOutput = inumOutput;
 
 
-    def test(self, patterns):
-        counter = 0
-        for p in patterns:
-            inputs = p[0]
-            targets = p[1]
-            guess = self.feedforward(inputs)
-            
-            if guess[0] >= .5 and targets[0] == 1:
-                counter+=1
-            elif guess[0] < .5 and targets[0] == 0:
-                counter+=1  
-        print((counter/len(patterns)) * 100, "% classification accuracy")
-    
-    def test2(self, patterns):
-        print("1 means outside circle, 0 inside")
-        for p in patterns:
-            print(p[0], '->', self.feedforward(p[0]))          
-            
-            
+	hiddenActivation = new double[numHidden];
+	hidden2Activation = new double[numHidden2];
+	outputActivation = new double[numOutput];
 
-    def Save_Weights(self):
-        file_ = open('weights.txt', 'w')
-        file_.write(self.wo, self.wh,self.wo)
-        file_.close()
-        
+	weightsIH = (double**)malloc((numHidden * numInputs) * sizeof(double)); // Input to Hidden weights.
+	weightsH1H2 = (double**)malloc((numHidden * numHidden2) * sizeof(double));
+	weightsHO = (double**)malloc((numOutput * numHidden2) * sizeof(double)); // Hidden to Output weights.
 
-    def train(self, patterns, iterations=1000, N=0.5, M=0.1):
+	outputDeltas = new double[numOutput];
+	hidden2Deltas = new double[numHidden2];
+	hiddenDeltas = new double[numHidden];
 
-        for i in range(iterations):
-            error = 0.0
-            for p in patterns:
-                inputs = p[0]
-                targets = p[1]
-                self.feedforward(inputs)
-                error = error + self.backPropagate(targets, N, M)
-            print("epoch number", i, 'error %-.5f' % error)
 
-def demo():
-    trainingset=[]
-    radius = 2
-    counter=0
-    while counter < 5000:
-        point_x = rand(-5,5)
-        point_y = rand(-5,5)
-        if (point_x**2 + point_y**2) < radius**2:
-            trainingset.append([[point_x,point_y],[0]])
-        else:
-            trainingset.append([[point_x,point_y],[1]])
-        counter = counter + 1
-    #define a network
-   
-    #test it with a randomly generated set of points inside or outside a cirlce
-    testset=[]
-    counter=0
-    while counter < 120:
-        point_x = rand(-5,5)
-        point_y = rand(-5,5)
-        if (point_x**2 + point_y**2) < radius**2:
-            testset.append([[point_x,point_y],[0]])
-        else:
-            testset.append([[point_x,point_y],[1]])
-        counter = counter + 1
-    
-    #Create a neural network with 2 hidden layers
-    n = NeuralNet(2, 40, 40, 1)
-    #test it with a randomly generated set of points inside or outside a cirlce
-    n.test2(testset)
-    n.test(testset)
-    # train it with a randomly generated set of points inside or outside a cirlce
-    n.train(trainingset)
-    # test it
-    n.test2(testset)
-    n.test(testset)
-demo()
+	changeHidden = (double**)malloc((numHidden * numInputs) * sizeof(double));
+	changeHidden2 = (double**)malloc((numHidden * numHidden2) * sizeof(double));
+	changeOutput = (double**)malloc((numOutput * numHidden2) * sizeof(double));
+}
+int main() {
+	const int numPatterns = 4;      // Input patterns for XOR experiment.
+	const int numEpochs = 200;
+	int numInputs = 3;
+	cout << "enter the size of the input layer" << endl;
+	//cin >> numInputs;
+	int numHidden=100;
+	cout << "enter the size of hidden layer 1" << endl;
+	//cin >> numHidden;
+	int numHidden2=100;
+	cout << "enter the size of hidden layer 2" << endl;
+	//cin >> numHidden2;
+	int numOutput=1;
+	cout << "enter the size of the output layer" << endl;
+	//cin >> numOutput;
+
+	double **trainInputs = (double**)(malloc(numInputs * numPatterns * sizeof(double)));
+	double *trainOutput = new double[numPatterns];
+
+	srand((unsigned)time(0));   // Seed the generator with system time.
+
+	NeuralNet NN(numInputs, numHidden, numHidden2, numOutput);
+	NN.initWeights();
+
+	trainInputs = initData(trainInputs, trainOutput, numPatterns ,numInputs,numOutput);
+
+	NN.train(numEpochs,numPatterns, trainInputs, trainOutput );
+	//Training has finished.
+	NN.displayResults(trainInputs,numPatterns, trainOutput);
+
+	return 0;
+
+free:
+	NN;
+	trainInputs;
+	trainOutput;
+}
+
+void NeuralNet::initWeights() {
+
+	weightsIH = new double*[numInputs];
+	for (int i = 0; i < numInputs; i++)
+	{
+		weightsIH[i] = new double[numHidden];
+	}
+
+	weightsH1H2 = new double*[numHidden];
+	for (int i = 0; i < numHidden; i++)
+	{
+		weightsH1H2[i] = new double[numHidden2];
+	}
+
+	weightsHO = new double*[numHidden2];
+	for (int i = 0; i < numHidden2; i++)
+	{
+		weightsHO[i] = new double[numOutput];
+	}
+
+	changeHidden = new double*[numInputs];
+	for (int i = 0; i < numInputs; i++)
+	{
+		changeHidden[i] = new double[numHidden];
+	}
+
+	changeHidden2 = new double*[numHidden];
+	for (int i = 0; i < numHidden; i++)
+	{
+		changeHidden2[i] = new double[numHidden2];
+	}
+
+	changeOutput = new double*[numHidden2];
+	for (int i = 0; i < numHidden2; i++)
+	{
+		changeOutput[i] = new double[numOutput];
+	}
+	//=================================Initialize weights to random values.======================================
+	for (int j = 0; j < numHidden; j++)
+	{
+		for (int i = 0; i < numInputs - 1; i++)
+		{
+			weightsIH[i][j] = (getRand() - 0.5) / 5;
+		}
+		weightsIH[numInputs - 1][j] = 1;//Bias
+	}
+	for (int j = 0; j < numHidden2; j++)
+	{
+		for (int i = 0; i < numHidden; i++)
+		{
+			weightsH1H2[i][j] = (getRand() - 0.5) / 5;;
+		}
+	}
+	for (int j = 0; j < numOutput; j++)
+	{
+		for (int i = 0; i < numHidden2; i++)
+		{
+			weightsHO[i][j] = (getRand() - 0.5) / 2;
+		}
+	}
+}
+void NeuralNet::train(int numEpochs, int numPatterns,double *trainInputs[], double *trainOutput) {
+	// Train the network.
+	for (int j = 0; j <= numEpochs; j++) {
+
+		for (int i = 0; i < numPatterns; i++) {
+
+			//Select a pattern at random.
+			patNum = rand() % numPatterns;
+
+			//Calculate the output and error for this pattern.
+			double *temp = trainInputs[patNum];
+			calcNet(trainInputs[patNum],trainOutput);
+
+			//Adjust network weights.
+			WeightChangesHO();
+			WeightChangesHidden(patNum, trainInputs[patNum]);
+		}
+
+		calcOverallError(trainInputs, numPatterns, trainOutput);
+
+		//Display the overall network error after each epoch
+		cout << "epoch = " << j << " RMS Error = " << RMSerror << endl;
+	}
+}
+
+double** initData(double **trainInput, double trainOutput[], int numPatterns, int numInputs, int numOutput) {
+	// The data here is the XOR data which has been rescaled to 
+	// the range -1 to 1.
+
+	// An extra input value of 1 is also added to act as the bias.
+
+	// The output must lie in the range -1 to 1.
+	double **trainInputs = new double*[numPatterns];
+	for (int i = 0; i < numPatterns; i++)
+	{
+		trainInputs[i] = new double[numInputs];
+	}
+	trainInputs[0][0] =1;
+	trainInputs[0][1] = -1;
+	trainInputs[0][2] = 1; // Bias
+	trainOutput[0] = 1;
+
+	trainInputs[1][0] = -1;
+	trainInputs[1][1] = 1;
+	trainInputs[1][2] = 1; // Bias
+	trainOutput[1] = 1;
+
+	trainInputs[2][0] = 1;
+	trainInputs[2][1] = 1;
+	trainInputs[2][2] = 1; // Bias
+	trainOutput[2] = -1;
+
+	trainInputs[3][0] = -1;
+	trainInputs[3][1] = -1;
+	trainInputs[3][2] = 1; // Bias
+	trainOutput[3] = -1;
+	return trainInputs;
+}
+
+void NeuralNet::calcNet(double *trainInputs, double *trainOutput) {
+	// Calculates values for Hidden and Output nodes.
+
+	for (int i = 0; i < numHidden; i++) {
+		hiddenActivation[i] = 0.0;
+		for (int j = 0; j < numInputs; j++) {
+			hiddenActivation[i] = hiddenActivation[i] + trainInputs[j] * weightsIH[j][i];
+		}
+		hiddenActivation[i] = tanh(hiddenActivation[i]);
+	}
+
+	for (int i = 0; i < numHidden2; i++) {
+		hidden2Activation[i] = 0.0;
+		for (int j = 0; j < numHidden; j++) {
+			hidden2Activation[i] = hidden2Activation[i] + (hiddenActivation[j] * weightsH1H2[i][j]);
+		}
+		hiddenActivation[i] = tanh(hiddenActivation[i]);
+	}
+
+	outPred = 0.0;
+	for (int i = 0; i < numHidden2; i++) {
+		for (int j = 0; j < numOutput; j++) {
+			outPred = outPred + hidden2Activation[j] * weightsHO[j][i];
+		}
+		outputActivation[i] = tanh(outPred);
+	}
+	//Calculate the error: "Expected" - "Actual"
+	errThisPat = outPred - trainOutput[0];
+}
+
+void NeuralNet::WeightChangesHO() {
+	//Adjust the Hidden to Output weights.
+	for (int j = 0; j < numOutput; j++) {
+		outputDeltas[j] = LR_HO * errThisPat * outputActivation[j];
+		for (int k = 0; k < numHidden2; k++) {
+			weightsHO[k][j] = weightsHO[k][j] - outputDeltas[j];
+			// Regularization of the output weights.
+			if (weightsHO[k][j] < -5) {
+				weightsHO[k][j] = -5;
+			}
+			else if (weightsHO[k][j] > 5) {
+				weightsHO[k][j] = 5;
+			}
+		}
+	}
+}
+
+void NeuralNet::WeightChangesHidden(int patNum, double *trainInputs) {
+	// Adjust the Input to Hidden weights.
+
+	for (int i = 0; i < numHidden2; i++) {
+
+		for (int k = 0; k < numHidden; k++) {
+
+			double x = 1 - (hidden2Activation[i] * hidden2Activation[i]);
+			x = x * weightsH1H2[i][k] * outputDeltas[0] * LR_IH;
+			x = x * hiddenActivation[k];
+			hidden2Deltas[i] = x;
+			weightsH1H2[k][i] = weightsH1H2[k][i] - hidden2Deltas[i];
+
+			if (weightsH1H2[k][i] < -5) {
+				weightsH1H2[k][i] = -5;
+			}
+			else if (weightsH1H2[k][i] > 5) {
+				weightsH1H2[k][i] = 5;
+			}
+		}
+	}
+	double sumof = 0;
+	for (int j = 0; j < numHidden2; j++) {
+		sumof = sumof + hidden2Deltas[j];
+	}
+
+	for (int i = 0; i < numHidden; i++) {
+
+		for (int k = 0; k < numInputs; k++) {
+			double x = 1 - (hiddenActivation[i] * hiddenActivation[i]);
+			x = x * weightsIH[k][i] * sumof;
+			x = x * trainInputs[k] * LR_IH;
+			hiddenDeltas[i] = x;
+			weightsIH[k][i] = weightsIH[k][i] - hiddenDeltas[i];
+
+			if (weightsIH[k][i] < -5) {
+				weightsIH[k][i] = -5;
+			}
+			else if (weightsIH[k][i] > 5) {
+				weightsIH[k][i] = 5;
+			}
+		}
+	}
+
+
+}
+
+void NeuralNet::calcOverallError(double ** trainInputs, int numPatterns, double *trainOutput) {
+	RMSerror = 0.0;
+
+	for (int i = 0; i < numPatterns; i++) {
+		patNum = i;
+		calcNet(trainInputs[patNum], trainOutput);
+		RMSerror = RMSerror + (errThisPat * errThisPat);
+	}
+
+	RMSerror = RMSerror / numPatterns;
+	RMSerror = sqrt(RMSerror);
+}
+
+void NeuralNet::displayResults(double ** trainInputs,int numPatterns,double *trainOutput) {
+	for (int i = 0; i < numPatterns; i++) {
+		patNum = i;
+		calcNet(trainInputs[patNum], trainOutput);
+		cout << "pat = " << patNum + 1 <<
+			" actual = " << trainOutput[patNum] <<
+			" neural model = " << outPred << endl;
+	}
+}
+
+double getRand() {
+	return double(rand() / double(RAND_MAX));
+}
