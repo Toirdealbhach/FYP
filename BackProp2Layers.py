@@ -25,124 +25,124 @@ def dsigmoid(x):
     return fx * (1 - fx)
 
 class NeuralNet:
-    def __init__(self, ni, nh, nh2, no):
+    def __init__(self, numInputs, numHidden, numHidden2, numOutputs):
         # number of input, hidden, hidden2 and output nodes
-        self.ni = ni + 1 # +1 for bias node
-        self.nh = nh
-        self.nh2 = nh2
-        self.no = no
+        self.numInputs = numInputs + 1 # +1 for bias node
+        self.numHidden = numHidden
+        self.numHidden2 = numHidden2
+        self.numOutputs = numOutputs
 
         # number of times activations are done
-        self.ai = [1.0]*self.ni
-        self.ah = [1.0]*self.nh
-        self.ah2 = [1.0]*self.nh2
-        self.ao = [1.0]*self.no
+        self.inputActivation = [1.0]*self.numInputs
+        self.hiddenActivation = [1.0]*self.numHidden
+        self.hiddenActivation2 = [1.0]*self.numHidden2
+        self.outputActivation = [1.0]*self.numOutputs
         
         # create weights
-        self.wi = makeMtx(self.ni, self.nh)
-        self.wh = makeMtx(self.nh,self.nh2)
-        self.wo = makeMtx(self.nh2, self.no)
+        self.weightsIH = makeMtx(self.numInputs, self.numHidden)
+        self.weightsH1H2 = makeMtx(self.numHidden,self.numHidden2)
+        self.weightsHO = makeMtx(self.numHidden2, self.numOutputs)
         # set them to random vaules
-        for i in range(0,self.ni):
-            for j in range(0,self.nh):
-                self.wi[i][j] = rand(-0.2, 0.2)
+        for i in range(0,self.numInputs):
+            for j in range(0,self.numHidden):
+                self.weightsIH[i][j] = rand(-0.2, 0.2)
         
-        for i in range(0,self.nh):
-            for j in range(0,self.nh2):
-                self.wh[i][j] = rand(-0.2, 0.2)
+        for i in range(0,self.numHidden):
+            for j in range(0,self.numHidden2):
+                self.weightsH1H2[i][j] = rand(-0.2, 0.2)
                 
-        for j in range(0,self.nh2):
-            for k in range(0,self.no):
-                self.wo[j][k] = rand(-2.0, 2.0)
+        for j in range(0,self.numHidden2):
+            for k in range(0,self.numOutputs):
+                self.weightsHO[j][k] = rand(-0.2, 0.2)
 
           
-        self.ci = makeMtx(self.ni, self.nh)
-        self.ch = makeMtx(self.nh, self.nh2)
-        self.co = makeMtx(self.nh2, self.no)
+        self.changeIH = makeMtx(self.numInputs, self.numHidden)
+        self.changeH1H2 = makeMtx(self.numHidden, self.numHidden2)
+        self.changeHO = makeMtx(self.numHidden2, self.numOutputs)
 
     def feedforward(self, inputs):
-        if len(inputs) != self.ni-1:
+        if len(inputs) != self.numInputs-1:
             raise ValueError('The input nodes should be the same length as the data input length. E.G. a point classifying system needs input nodes = dimension of the points in the training set ')
 
         # input nodes
-        for i in range(self.ni-1):
-            self.ai[i] = inputs[i]
+        for i in range(self.numInputs-1):
+            self.inputActivation[i] = inputs[i]
 
         # hidden node activations
-        for j in range(self.nh):
+        for j in range(self.numHidden):
             sumOf = 0.0
-            for i in range(self.ni):
-                sumOf = sumOf + self.ai[i] * self.wi[i][j]
-            self.ah[j] = sigmoid(sumOf)
+            for i in range(self.numInputs):
+                sumOf = sumOf + self.inputActivation[i] * self.weightsIH[i][j]
+            self.hiddenActivation[j] = sigmoid(sumOf)
         
         # hidden2 node activations
-        for j in range(self.nh2):
+        for j in range(self.numHidden2):
             sumOf = 0.0
-            for i in range(self.nh):
-                sumOf = sumOf + self.ah[i] * self.wh[i][j]
-            self.ah2[j] = sigmoid(sumOf)
+            for i in range(self.numHidden):
+                sumOf = sumOf + self.hiddenActivation[i] * self.weightsH1H2[i][j]
+            self.hiddenActivation2[j] = sigmoid(sumOf)
         # output node activations
-        for k in range(self.no):
+        for k in range(self.numOutputs):
             sumOf = 0.0
-            for j in range(self.nh2):
-                sumOf = sumOf + self.ah2[j] * self.wo[j][k]
-            self.ao[k] = sigmoid(sumOf)
+            for j in range(self.numHidden2):
+                sumOf = sumOf + self.hiddenActivation2[j] * self.weightsHO[j][k]
+            self.outputActivation[k] = sigmoid(sumOf)
         #return guess
-        return self.ao[:]
+        return self.outputActivation[:]
 
 
     def backPropagate(self, targets, N, M):
-        if len(targets) != self.no:
+        if len(targets) != self.numOutputs:
             raise ValueError('wrong number of target values')
 
         # calculate error for output
-        output_deltas = [0.0] * self.no
-        for k in range(self.no):
-            error = targets[k]-self.ao[k]
-            output_deltas[k] = dsigmoid(self.ao[k]) * error
+        output_deltas = [0.0] * self.numOutputs
+        for k in range(self.numOutputs):
+            error = targets[k]-self.outputActivation[k]
+            output_deltas[k] = dsigmoid(self.outputActivation[k]) * error
         
         # calculate error for hidden layer 2
-        hidden_deltas2 = [0.0] * self.nh2
-        for j in range(self.nh2):
+        hidden_deltas2 = [0.0] * self.numHidden2
+        for j in range(self.numHidden2):
             error = 0.0
-            for k in range(self.no):
-                error = error + output_deltas[k]*self.wo[j][k]
-            hidden_deltas2[j] = dsigmoid(self.ah2[j]) * error
+            for k in range(self.numOutputs):
+                error = error + output_deltas[k]*self.weightsHO[j][k]
+            hidden_deltas2[j] = dsigmoid(self.hiddenActivation2[j]) * error
         
         # calculate error for hidden layer 1
-        hidden_deltas = [0.0] * self.nh
-        for j in range(self.nh):
+        hidden_deltas = [0.0] * self.numHidden
+        for j in range(self.numHidden):
             error = 0.0
-            for k in range(self.nh2):
-                error = error + hidden_deltas2[k]*self.wh[j][k]
-            hidden_deltas[j] = dsigmoid(self.ah[j]) * error
+            for k in range(self.numHidden2):
+                error = error + hidden_deltas2[k]*self.weightsH1H2[j][k]
+            hidden_deltas[j] = dsigmoid(self.hiddenActivation[j]) * error
 
         # update weights between hidden layer 2 and output
-        for j in range(self.nh2):
-            for k in range(self.no):
-                change = output_deltas[k]*self.ah2[j]
-                self.wo[j][k] = self.wo[j][k] + N*change + M*self.co[j][k]
-                self.co[j][k] = change
-                #print N*change, M*self.co[j][k]
+        for j in range(self.numHidden2):
+            for k in range(self.numOutputs):
+                change = output_deltas[k]*self.hiddenActivation2[j]
+                self.weightsHO[j][k] = self.weightsHO[j][k] + N*change + M*self.changeHO[j][k]
+                self.changeHO[j][k] = change
+                #print N*change, M*self.changeHO[j][k]
         
         # update weights between hidden layer 1 and hidden layer 2
-        for j in range(self.nh):
-            for k in range(self.nh2):
-                change = hidden_deltas2[k]*self.ah[j]
-                self.wh[j][k] = self.wh[j][k] + N*change + M*self.ch[j][k]
-                self.ch[j][k] = change
+        for j in range(self.numHidden):
+            for k in range(self.numHidden2):
+                change = hidden_deltas2[k]*self.hiddenActivation[j]
+                self.weightsH1H2[j][k] = self.weightsH1H2[j][k] + N*change + M*self.changeH1H2[j][k]
+                self.changeH1H2[j][k] = change
         
         # update weights between input and hidden layer 1
-        for i in range(self.ni):
-            for j in range(self.nh):
-                change = hidden_deltas[j]*self.ai[i]
-                self.wi[i][j] = self.wi[i][j] + N*change + M*self.ci[i][j]
-                self.ci[i][j] = change
+        for i in range(self.numInputs):
+            for j in range(self.numHidden):
+                change = hidden_deltas[j]*self.inputActivation[i]
+                self.weightsIH[i][j] = self.weightsIH[i][j] + N*change + M*self.changeIH[i][j]
+                self.changeIH[i][j] = change
 
         # calculate error
         error = 0.0
         for k in range(len(targets)):
-            error = error + 0.5*(targets[k]-self.ao[k])**2
+            error = error + 0.5*(targets[k]-self.outputActivation[k])**2
         return error
 
 
@@ -153,9 +153,9 @@ class NeuralNet:
             targets = p[1]
             guess = self.feedforward(inputs)
             
-            if guess[0] >= .5 and targets[0] == 1:
+            if guess[0] >= .5  and targets[0] == 1:
                 counter+=1
-            elif guess[0] < .5 and targets[0] == 0:
+            elif guess[0] < .5  and targets[0] == 0:
                 counter+=1  
         print((counter/len(patterns)) * 100, "% classification accuracy")
     
@@ -168,11 +168,11 @@ class NeuralNet:
 
     def Save_Weights(self):
         file_ = open('weights.txt', 'w')
-        file_.write(self.wo, self.wh,self.wo)
+        file_.write(self.weightsHO, self.weightsH1H2,self.weightsHO)
         file_.close()
         
 
-    def train(self, patterns, iterations=1000, N=0.5, M=0.1):
+    def train(self, patterns, iterations=100, N=0.5, M=0.1):
 
         for i in range(iterations):
             error = 0.0
@@ -181,7 +181,7 @@ class NeuralNet:
                 targets = p[1]
                 self.feedforward(inputs)
                 error = error + self.backPropagate(targets, N, M)
-            #print("epoch number", i, 'error %-.5f' % error)
+            print("epoch number", i, 'error %-.5f' % error)
 
 def demo():
     trainingset=[]
@@ -209,9 +209,9 @@ def demo():
         counter = counter + 1
     
     #Create a neural network with 2 hidden layers
-    n = NeuralNet(2, 5, 5, 1)
+    n = NeuralNet(2, 50, 50, 1)
     #test it with a randomly generated set of points inside or outside a cirlce
-    n.test2(testset)
+    #n.test2(testset)
     n.test(testset)
     # train it with a randomly generated set of points inside or outside a cirlce
     n.train(trainingset)
