@@ -50,16 +50,19 @@ class NeuralNet {
 	float **d_D; //deltas
 	float **temp_error;
 	float *dev_trainInputs;
+	float *dev_trainOutput;
 
 	float **trainInputs;
 	float **trainOutput; 
 
+	cublasHandle_t handle;
+
 	public:
 	NeuralNet(int num_layers);
 	void feedforward();
-	void displayResults( int numPatterns);
+	void Correctness_test( int numPatterns);
 	void train(int numEpochs, int numPatterns);
-	void backPropagate(); //Needs to be written
+	void backPropagate();
 	void initData(int numPatterns, int numInputs, int numOutput);
 };
 	
@@ -96,7 +99,12 @@ NeuralNet::NeuralNet(int num_layer){
 		initWeights<<<grid, block>>>(d_W[count], (unsigned)time(NULL));
 	}
 	cudaMalloc((void**)&dev_trainInputs, layer_sizes[0] * sizeof(float));
-	
+	//layer_sizes[num_layers -1]
+	cudaMalloc((void**)&dev_trainOutput, sizeof(float));
+
+
+	cublasCreate(&handle);
+
 }
 
 int IDX2C(int i, int j, int ld) {
@@ -105,11 +113,10 @@ int IDX2C(int i, int j, int ld) {
 int main() {
 	srand((unsigned)time(NULL)); // Seed the generator with system time.
 	const int numPatterns = 4;      // Input patterns for XOR experiment.
-	const int numEpochs = 1;
+	const int numEpochs = 200;
 	const int numInputs = 3; 
 	const int numOutput = 1;
 	clock_t t1, t2;
-	
 	
 	cout << "Enter number of layers" << endl;
 	int num_layers;
@@ -121,43 +128,32 @@ int main() {
 
 	t1 = clock();
 	NN.train(numEpochs,numPatterns);
-	//NN.displayResults(numPatterns);
+	NN.Correctness_test(numPatterns);
 	t2 = clock();
 	float diff((float)t2 - (float)t1);
 	cout << endl;
 	cout << diff << endl;
+	cout << "clock ticks per second" << CLOCKS_PER_SEC << endl;
 
 	return EXIT_SUCCESS;
 }
 
 void NeuralNet::feedforward() {
-
 	cudaError_t cudaStatus; // cudaMalloc status
 	cublasStatus_t stat; // CUBLAS functions status
-	cublasHandle_t handle;
-//	cudaMalloc((void**)&handle, sizeof(cublasHandle_t));
-	  // CUBLAS context
-
-	stat = cublasCreate(&handle); // initialize CUBLAS context
-	//stat = cublasSetVector(layer_sizes[0], sizeof(float), trainInputs[patNum], 1, d_N[0], layer_sizes[0]);
-	//cout << *trainInputs[patNum] << endl;
-	//cout << *trainInputs[patNum] + 1 << endl;
+	// initialize CUBLAS context
 	cudaStatus = cudaMemcpy(d_N[0], trainInputs[patNum], (layer_sizes[0] -1) * sizeof(float), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Get last error returned error code %d after copying input vector in feedforward function!\n", stat);
+		fprintf(stderr, "Get last error returned error code %d after copying input vector in feedforward function!\n", cudaStatus);
 	}
 	int data_length;
 	int block;
 	int grid;
-	
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Get last error returned error code %d after copying input vector in feedforward function!\n", stat);
-	}
 	block = 256;  //define block and grid
 	float al = 1.0f; // al =1
 	float bet = 0.0f; // beta is 0. reference the documnentation===================================================
 	for (int count = 0; count < num_layers - 1; count++) {
-		cublasSgemv(handle, CUBLAS_OP_N, layer_sizes[count], layer_sizes[count + 1], &al, d_W[count], layer_sizes[count], d_N[count], 1, &bet, d_N[count + 1], 1);
+		stat = cublasSgemv(handle, CUBLAS_OP_N, layer_sizes[count], layer_sizes[count + 1], &al, d_W[count], layer_sizes[count], d_N[count], 1, &bet, d_N[count + 1], 1);
 		if (stat != cudaSuccess) {
 			fprintf(stderr, "Get last error returned error code %d after launching matrix vector mul in feedforward function!\n", stat);
 		}
@@ -172,38 +168,41 @@ void NeuralNet::feedforward() {
 			fprintf(stderr, "Get last error returned error code %d after launching feedforward sigmoid kernel!\n", cudaStatus);
 		}
 	}
-	//cublasDestroy(handle);
 }
 
 void NeuralNet::backPropagate(){
 	cudaError_t cudaStatus; // cudaMalloc status
 	cublasStatus_t stat; // CUBLAS functions status
-	cublasHandle_t handle; // CUBLAS context
-	stat = cublasCreate(&handle); // initialize CUBLAS context
 	int data_length;
-	int block = 32;
+	int block = 128;
 	int grid;  //define block and grid
 	float al = 1.0f; // al =1
 	float bet = 0.0f; // beta is 0. reference the documnentation===================================================
+	// (layer_sizes[num_layers] - 1) *
+	cudaStatus = cudaMemcpy(dev_trainOutput, trainOutput[patNum], sizeof(float), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "Get last error returned error code %d after copying output vector in backpropagate function!\n", cudaStatus);
+	}
+
 	for (int count = num_layers-1; count > 0; count--) {
 		data_length = layer_sizes[count];
-		grid = 1; block = data_length;
-		if (data_length > 256) {
-			block = 256;
+		grid = 1;
+		block = data_length;
+		if (data_length > 128) {
+			block = 128;
 			grid = (data_length / block);
 		}
 		if (count == num_layers-1) {
 			//BASED ON ASSUMPTION THAT DATA LENGTH = n*256;
 
-			deltaCalcOutput<<<grid, block>>>(d_N[count], d_D[count], trainOutput[patNum]);
+			deltaCalcOutput<<<grid, block>>>(d_N[count], d_D[count], dev_trainOutput);
 			cudaStatus = cudaGetLastError();
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "Get last error returned error code %d after launching backprop deltaCalcOutput!\n", cudaStatus);
 			}
 		}
 		else{
-			stat = cublasSgemv(handle, CUBLAS_OP_N, layer_sizes[count], layer_sizes[count - 1], &al, d_W[count], layer_sizes[count], d_D[count], 1, &bet, d_D[count - 1], 1);
-						
+			stat = cublasSgemv(handle, CUBLAS_OP_N, layer_sizes[count], layer_sizes[count - 1], &al, d_W[count], layer_sizes[count], d_D[count], 1, &bet, d_D[count - 1], 1);			
 			if (stat != cudaSuccess) {
 				fprintf(stderr, "Get last error returned error code %d after launching matrix vector mul in backprop function!\n", cudaStatus);
 			}
@@ -218,35 +217,36 @@ void NeuralNet::backPropagate(){
 	for (int count = num_layers - 1; count > 0; count--){
 		data_length = layer_sizes[count] ;
 		GRID.x = 1; BLOCK.x = data_length;
-		if (data_length > 256) {
-			BLOCK.x = 256;
+		if (data_length > 32) {
+			BLOCK.x = 32;
 			GRID.x = (data_length / BLOCK.x);
 		}
-		data_length = layer_sizes[count+1];
+		data_length = layer_sizes[count-1];
 		GRID.y = 1; BLOCK.y = data_length;
-		if (data_length > 256) {
-			BLOCK.y = 256;
+		if (data_length > 32) {
+			BLOCK.y = 32;
 			GRID.y = (data_length / BLOCK.y);
 		}
-		weightUpdate <<<GRID, BLOCK>>> ( d_W[count],  d_D[count+1],  d_N[count-1]);
+		weightUpdate<<<GRID, BLOCK>>>( d_W[count-1],  d_D[count],  d_N[count-1]);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "Get last error returned error code %d after launching weightupdate!\n", cudaStatus);
+		}
 	}
-
-	//cublasDestroy(handle);
 }
 
 void NeuralNet::train(int numEpochs, int numPatterns) {
 	// Train the network.
-	for (int j = 0; j < 100; j++) {
+	for (int j = 0; j < numEpochs; j++) {
 		RMSerror = 0;
-		for (int i = 0; i < 4; i++) {
+		for (int i = 0; i < numPatterns; i++) {
 
 			//Select a pattern at random.
 			patNum = rand() % numPatterns;
 
 			feedforward();
-			//cudaDeviceSynchronize();
-			//backPropagate();
-			//cudaDeviceSynchronize();
+			
+			backPropagate();
+			
 			//RMSerror = RMSerror + abs(backPropagate(patNum, trainOutput[patNum]));
 		}
 		//calcOverallError(trainInputs, numPatterns, trainOutput);
@@ -278,28 +278,33 @@ void NeuralNet::initData(int numPatterns, int numInputs, int numOutput) {
 	trainInputs[0][1] = 0.0f;
 	trainInputs[0][2] = 1.0f; // Bias
 	trainOutput[0][0] = 0.0f;
+	trainOutput[0][1] = 0.0f;
 
 	trainInputs[1][0] = 0.0f;
 	trainInputs[1][1] = 1.0f;
 	trainInputs[1][2] = 1.0f; // Bias
 	trainOutput[1][0] = 1.0f;
+	trainOutput[1][1] = 1.0f;
 
 	trainInputs[2][0] = 1.0f;
 	trainInputs[2][1] = 1.0f;
 	trainInputs[2][2] = 1.0f; // Bias
 	trainOutput[2][0] = 0.0f;
+	trainOutput[2][1] = 0.0f;
 
 	trainInputs[3][0] = 0.0f;
 	trainInputs[3][1] = 0.0f;
 	trainInputs[3][2] = 1.0f; // Bias
 	trainOutput[3][0] = 1.0f;
+	trainOutput[3][1] = 1.0f;
+
 
 Error:
 	//throw;
 }
 
-void NeuralNet::displayResults(int numPatterns) {
-	for (int i = 0; i <= numPatterns; i++) {
+void NeuralNet::Correctness_test(int numPatterns) {
+	for (int i = 0; i < numPatterns; i++) {
 		patNum = i;
 		feedforward();
 		cout << "pat = " << patNum + 1 <<
@@ -320,8 +325,7 @@ __global__ void sigmoid(float * dst){
 
 __global__ void deltaCalcOutput(float *OutActivation, float *Outputdelta, float *targets){	
 	int n = blockIdx.x*blockDim.x + threadIdx.x;
-	float error = targets[n] - OutActivation[n];
-	Outputdelta[n] = error * (1 / (1 + exp(-OutActivation[n]))*(1 - 1 / (1 + exp(-OutActivation[n]))));
+	Outputdelta[n] = (targets[n] - OutActivation[n]) * (1 / (1 + exp(-OutActivation[n]))*(1 - 1 / (1 + exp(-OutActivation[n]))));
 }
 
 __global__ void deltaCalcHidden(float *Activation,float *delta){
@@ -333,9 +337,9 @@ __global__ void weightUpdate(float *d_W,float *d_D,float *d_N){
 	int2 pos;
 	pos.x = blockIdx.x*blockDim.x + threadIdx.x;//row j
 	pos.y = blockIdx.y*blockDim.y + threadIdx.y;//column k
-	int n = pos.y*blockDim.y*gridDim.y + pos.x;
+	int n = pos.x*blockDim.x*gridDim.y + pos.y;
 	float N = 0.1;
-	d_W[n] = d_W[n] + N*d_D[pos.x] * d_N[pos.y];
+	d_W[n] = d_W[n] + N*d_D[pos.y] * d_N[pos.x];
 }
 
 
